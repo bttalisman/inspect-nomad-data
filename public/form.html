@@ -1,0 +1,44 @@
+<html>
+
+<head>
+	<script
+	  src="https://code.jquery.com/jquery-3.3.1.min.js"
+	  integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8="
+	  crossorigin="anonymous"></script>
+
+	<script src="moment.js"></script>
+	<link rel="stylesheet" href="pikaday.css">
+
+</head>
+
+<body>
+	<form method="post" action="/run">
+	 	Zone ID:<br>
+	  	<input type="text" name="zoneid" id="zoneid"></inpu><br>
+	  	Carrier ID:<br>
+	  	<input type="text" name="carrierid" id="carrierid"><br>
+	  	Date:<br>
+	  	<input type="text" name="datestart" id="datestart"> - <input type="text" name="dateend" id="dateend"><br><br>
+	  	<input type="submit" value="Submit">
+	</form>
+</body>
+
+
+</html>
+<script src="pikaday.js"></script>
+<script>
+    var startpicker = new Pikaday({
+        field: $('#datestart')[0],
+        format: 'YYYY-MM-DD',
+        onSelect: function() {
+            console.log(this.getMoment().format('Do MMMM YYYY'));
+        }
+    });
+    var endpicker = new Pikaday({
+        field: $('#dateend')[0],
+        format: 'YYYY-MM-DD',
+        onSelect: function() {
+            console.log(this.getMoment().format('Do MMMM YYYY'));
+        }
+    });    
+</script>
