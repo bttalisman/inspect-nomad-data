@@ -9,7 +9,8 @@ const bodyParser = require('body-parser');
 const Parse = require('parse/node');
 const fs = require('fs');
 const fsPromises = require('fs.promises');
-const { exec } = require('child_process');
+//const { exec } = require('child_process');
+const exec = require('child-process-promise').exec;
 const moment = require('moment');
 const hash = require('object-hash');
 
@@ -44,7 +45,6 @@ function getPromiseToSortImage(desc, fileName, s3Date) {
 
 	p = Promise.all( [ demographicQuery.find(), fileName, s3Date ] )
 		.then(([ demographics, s, s3Date ]) => {
-			console.log('find() returned.');
 			if (demographics.length > 0) {
 				// image has a Demographic
 
@@ -86,9 +86,10 @@ app.post('/run', function(req, res) {
 	let dateStart = req.body.datestart;
 	let dateEnd = req.body.dateend;
 	let dates = getDates(dateStart, dateEnd);
-	let hashString = hash([carrierId, zoneId, dateStart, dateEnd]);
+	let hashString = hash([dateStart, dateEnd]);                          // Cache on dates only
+	let filterHashString = hash([dateStart, dateEnd, zoneId, carrierId])  // Cache on dates and filter terms
 	let imageListFileName = './temp/' + hashString + '_images.txt';
-	let descFileName = './temp/' + hashString + '_desc.jsn';
+	let descFileName = './temp/' + filterHashString + '_desc.jsn';
 
 	console.log('carrierId: ' + carrierId);
 	console.log('zoneId: ' + zoneId);
@@ -96,98 +97,119 @@ app.post('/run', function(req, res) {
 	console.log('dateEnd: ' + dateEnd);
 	console.log('dates: ' + dates);
 	console.log('dates: ' + dates);
-	console.log('hashString: ' + hashString);
 	console.log('imageListFileName: ' + imageListFileName);
 	console.log('descFileName: ' + descFileName);
 
-	// Construct a regular expression to OR the dates in the date range.
-	let regex = '';
-	for( i = 0; i < dates.length; i++ )
+	let getListProm;
+	if (fs.existsSync(imageListFileName)) 
 	{
-		d = dates[i];
-		if (regex) {
-			regex += '|' + d;
-		} else {
-			regex = d;}
-	}
-	console.log('regex: ' + regex);
-	let comm = '/Users/benjamintuckertalisman/.local/lib/aws/bin/aws s3 ls s3://nomad-ad-files | egrep \'' /
-		+ regex + '\' > ' + imageListFileName;
-	comm = 'ls';
-	console.log('comm: ' + comm);
+		console.log('Cached list found, reading it.');
+		getListProm = fsPromises.readFile(imageListFileName);
 
+	} else {
 
-
-	exec(comm, (err, stdout, stderr) => {
-		if (err) 
+		console.log('NO list file found, running AWS client.');
+		// Construct a regular expression to OR the dates in the date range.
+		let regex = '';
+		for( i = 0; i < dates.length; i++ )
 		{
-	    	console.log('err: ' + err);
+			d = dates[i];
+			if (regex) {
+				regex += '|' + d;
+			} else {
+				regex = d;}
+		}
+		console.log('regex: ' + regex);
+		let comm = '/Users/benjamintuckertalisman/.local/lib/aws/bin/aws s3 ls s3://nomad-ad-files | egrep \'' + regex + '\' > ' + imageListFileName;
+		console.log('comm: ' + comm);
 
-	  	} else {
-			// Grep regex does not support AND, so for the other constraints we will cull the above results.
+		getListProm = exec(comm)
+		.then(() => { return fsPromises.readFile(imageListFileName); });
+	}
 
-			let imagesArray = fs.readFileSync(imageListFileName).toString().split('\n');
-			let totalResultsCount = imagesArray.length;
-			console.log('read ' + totalResultsCount + ' images.');
 
-			let results;
-			// get results with carrier
-			if (carrierId) {results = imagesArray.filter(line => { return line.includes(carrierId); });}
-			// get results with zone
-			if (zoneId) {results = imagesArray.filter(line => { return line.includes(zoneId); });}
-			let filteredResultsCount = results.length;
-			console.log('images count after filtering: ' + filteredResultsCount);
 
-			let desc, start;
-			try {
-				desc = JSON.parse( fs.readFileSync(descFileName).toString() );
-				start = desc['processed_image_count'] - 1;
-				console.log('Read cached description file.');
-			} catch( err ) {
-				start = 0;
-				desc = {'processed_image_count': 0,
-						'has_faces': [],
-						'has_no_faces': []}; 
-			}
-			console.log('Starting with image at index: ' + start);
+	getListProm.then((data) => {
 
-			let lastP;
-			for( let imageIndex = start; imageIndex < filteredResultsCount; imageIndex++ )
+		// Grep regex does not support AND, so for the other constraints we will cull the above results.
+
+		let imagesArray = data.toString().split('\n');
+		let totalResultsCount = imagesArray.length;
+		console.log('read ' + totalResultsCount + ' images.');
+
+		let results = imagesArray;
+		// get results with carrier
+		if (carrierId) {console.log('filtering carrierId.'); results = imagesArray.filter(line => { return line.includes(carrierId); });}
+		// get results with zone
+		if (zoneId) {console.log('filtering zoneId.'); results = results.filter(line => { return line.includes(zoneId); });}
+
+		if (!results) { res.redirect('/noresults') }
+
+		let filteredResultsCount = results.length;
+		console.log('images count after filtering: ' + filteredResultsCount);
+
+		let desc, start;
+		try {
+			desc = JSON.parse( fs.readFileSync(descFileName).toString() );
+			start = desc['processed_image_count'] - 1;
+			console.log('Read cached description file.');
+		} catch( err ) {
+			start = 0;
+			desc = {'processed_image_count': 0,
+					'has_faces': [],
+					'has_no_faces': []}; 
+		}
+		console.log('Starting with image at index: ' + start);
+
+		let lastP;
+		for( let imageIndex = start; imageIndex < filteredResultsCount; imageIndex++ )
+		{
+			let fileName = results[imageIndex].split(/[ ]+/)[3];
+			let s3Date = results[imageIndex].split(/[ ]+/)[0];
+
+			if (fileName)
 			{
-				let fileName = results[imageIndex].split(/[ ]+/)[3];
-				let s3Date = results[imageIndex].split(/[ ]+/)[0];
-
-				if (fileName)
+				if (!lastP)
 				{
-					if (!lastP)
-					{
-						lastP = getPromiseToSortImage(desc, fileName, s3Date);
-					
-					} else {
-						lastP = lastP.then(() => {
-							desc['processed_image_count'] = desc['processed_image_count'] + 1;
-							fs.writeFileSync(descFileName, JSON.stringify(desc));							
-							return getPromiseToSortImage(desc, fileName, s3Date);
-						});
-					}
-				} // if (fileName)					
-			} // for each image on the page
+					lastP = getPromiseToSortImage(desc, fileName, s3Date);
+				
+				} else {
+					lastP = lastP.then(() => {
+						desc['processed_image_count'] = desc['processed_image_count'] + 1;
+						fs.writeFileSync(descFileName, JSON.stringify(desc));							
+						return getPromiseToSortImage(desc, fileName, s3Date);
+					});
+				}
+			} // if (fileName)					
+		} // for each image on the page
 
+		lastP.then(() => {
+			console.log('writing json file');
+			fs.writeFileSync(descFileName, JSON.stringify(desc));
 
-			lastP.then(() => {
-				console.log('writing json file');
-				fs.writeFileSync(descFileName, JSON.stringify(desc));
-			})
-			.catch(err => {
-				console.log('ERR: ' + err);
-			});
+			res.redirect('/display?hash=' + filterHashString + '&hasfaces=true');
+		})
+		.catch(err => {
+			console.log('ERR: ' + err);
+		});
 
-		} // no error running the command-line query
+	})
+	.catch(err => {
+
+		console.log('err: ' + err);
 	});
 
-	res.redirect('/display?hash=' + hashString + '&hasfaces=true');
 });
 
+
+
+
+
+app.get('/noresults', function(req, res) {
+	let s = '<!DOCTYPE html><html><head><link rel="stylesheet" href="./styles.css"></head><body>';
+	s += 'No Results.</body></html>';
+	res.send(s);
+});
 
 
 app.get('/display', function(req, res) {
@@ -238,7 +260,6 @@ app.get('/display', function(req, res) {
 
 	s += '<div class="flex-container">';
 	
-
 	for( i = start; i < end; i++ )
 	{
 		o = imList[i];
